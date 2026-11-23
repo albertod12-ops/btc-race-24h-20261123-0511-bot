@@ -54,6 +54,8 @@ class DipRider {
     const holding = state.positions.get(SYMBOL);
     const qty = holding === undefined ? 0n : holding.qty;
     if (qty > 0n) {
+      // Ride the position: the peak only ever rises, so the stop only ever
+      // rises with it; a close 2% below the peak ends the trade.
       if (this.peak === null || close > this.peak) this.peak = close;
       if (close < this.peak * (1 - TRAIL_BPS / 10000)) {
         this.peak = null;
