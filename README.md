@@ -9,10 +9,10 @@ A long-only cbBTC trading bot for make.fun's "Race a BTC trading bot live for 24
 ## Run it
 
 ```sh
-python3 main.py
+node main.ts
 ```
 
-The bot speaks agent-fun/bars-replay/v1 on stdin/stdout: one JSON line per minute bar in, one reply with its orders out. Grade it locally with the competition kit:
+The bot speaks agent-fun/bars-replay/v1 on stdin/stdout: one JSON line per minute bar in, one reply with its orders out. It runs on Node 22 as `node main.ts`. Grade it locally with the competition kit:
 
 ```sh
 node cli/makefun.mjs grade-local --kit <kit-dir> --bot . --driver process
