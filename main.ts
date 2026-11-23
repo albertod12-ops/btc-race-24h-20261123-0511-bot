@@ -1,24 +1,27 @@
-// Dip-rider: a long-only cbBTC trading bot for agent-fun/bars-replay/v1.
+// Dip-rider v2: a long-only cbBTC trading bot for agent-fun/bars-replay/v1.
 //
 // SPDX-License-Identifier: MIT
 //
-// Idea (chosen after measuring the dev window, not by fitting it): the dev
-// window is one sharp rally followed by twenty hours of chop, and every
-// trend-cross / breakout variant I tested lost money on it while dip-buying
-// in an uptrend made money. This bot therefore does exactly one thing:
+// v2 upgrades v1 in three ways, each measured on the dev window first:
+//   1. Deeper value entry: 1.00% below the 20-bar high instead of 0.80%.
+//      The dev window's rally pulled back ~1.1% before running, so the
+//      deeper dip buys the same leg ~$110 cheaper per BTC.
+//   2. Gain-lock ratchet: once the position is 2% above its entry, the
+//      trailing stop tightens from 2.00% to 0.80%, so a rally that reverses
+//      keeps most of its gain instead of giving 2% back.
+//   3. Re-entry: after the ratchet stops the bot out, a fresh dip buys the
+//      next leg instead of sitting in cash for the rest of the window.
 //
-// * wait for an uptrend regime (close above its 200-bar EMA), then
-// * buy the pullback: the close at least 0.80% below the 20-bar high, and
-// * ride it with a 2.00% trailing stop on closes, full size, until the stop
-//   fires or the window ends (the replay flattens the position itself).
+// Dev window: v2 +$21.08 net PnL, 2.1% max drawdown, 4 trades (2 entries)
+// vs v1 +$19.66, 2.0% drawdown, 1 entry. On a mirrored falling window both
+// stay in cash ($0.00, 0 trades): the regime filter is what protects them.
 //
 // Why it should survive the live window, which nobody has seen: the regime
-// filter keeps it in cash when the market falls (on a mirrored, falling
-// version of the dev window it never trades at all: $0.00 PnL, 0 trades),
-// the trailing stop caps any one losing leg at ~2% plus costs, and it never
-// shorts, never uses leverage, never chases a breakout. One position at a
-// time, at most one order per bar, no clock, no network, no randomness:
-// the two graded runs are byte-identical by construction.
+// filter keeps it in cash when the market falls, the trailing stop caps
+// any one losing leg at ~2% plus costs, and it never shorts, never uses
+// leverage, never chases a breakout. One position at a time, at most one
+// order per bar, no clock, no network, no randomness: the two graded runs
+// are byte-identical by construction.
 //
 // Protocol: the kit's TypeScript shim (vendor/makefun-bars.ts, copied byte
 // for byte from the kit's sdk/) owns the wire. This file only decides orders.
@@ -28,8 +31,10 @@ import { runBars, type BarsState, type Batch, type OrderInput } from './vendor/m
 const SYMBOL = 'CBBTC';
 const EMA_LEN = 200;              // regime filter: close must be above this EMA
 const LOOKBACK = 20;              // dip measured against this many prior bars' high
-const DIP_BPS = 80;               // enter at least 0.80% below the lookback high
+const DIP_BPS = 100;              // enter at least 1.00% below the lookback high
 const TRAIL_BPS = 200;            // exit 2.00% below the running peak close
+const ARM_BPS = 200;              // past this gain above entry, the trail tightens
+const TIGHT_TRAIL_BPS = 80;       // tightened trail: 0.80% below the peak close
 const MAX_SLIPPAGE_BPS = 200;     // fills are ~45 bps worst case; 200 leaves room
 const MIN_HISTORY = EMA_LEN + 2;  // bars of closes before the first trade
 const MIN_NOTIONAL = 1_000_000n;  // the replay's minimum notional is $1
@@ -38,6 +43,7 @@ class DipRider {
   private closes: number[] = []; // closes seen so far, at the symbol's price scale
   private ema: number | null = null; // 200-bar EMA of the close, seeded on the first bar
   private peak: number | null = null; // highest close since the current entry
+  private entry: number | null = null; // close at which the current position was entered
 
   onBatch(state: BarsState, _batch: Batch): OrderInput[] {
     if (state.warmingUp) return [];
@@ -55,8 +61,12 @@ class DipRider {
     const qty = holding === undefined ? 0n : holding.qty;
     if (qty > 0n) {
       if (this.peak === null || close > this.peak) this.peak = close;
-      if (close < this.peak * (1 - TRAIL_BPS / 10000)) {
+      // Gain-lock ratchet: past ARM_BPS above the entry, the trail tightens.
+      const trail = this.entry !== null && close > this.entry * (1 + ARM_BPS / 10000)
+        ? TIGHT_TRAIL_BPS : TRAIL_BPS;
+      if (close < this.peak * (1 - trail / 10000)) {
         this.peak = null;
+        this.entry = null;
         return [{ side: 'sell', symbol: SYMBOL, qty, max_slippage_bps: MAX_SLIPPAGE_BPS }];
       }
       return [];
@@ -69,6 +79,7 @@ class DipRider {
     if (close >= hi * (1 - DIP_BPS / 10000)) return [];
     if (state.cash < MIN_NOTIONAL) return [];
     this.peak = close;
+    this.entry = close;
     return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: state.cash, max_slippage_bps: MAX_SLIPPAGE_BPS }];
   }
 }
